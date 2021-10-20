@@ -13,11 +13,11 @@ from LogPython import LogManager
 import re
 from faker import Faker
 
-
-class User:    
+class YandexUser:    
     YANDEX_REGISTRATION_FIELDS = 'https://passport.yandex.ru/registration'
     YANDEX_REGISTRATION = 'https://passport.yandex.ru/registration-validations/registration-alternative'
     CHECK_HUMAN = 'https://passport.yandex.ru/registration-validations/checkHuman'
+    YANDEX_AUTHORIZATION = "https://passport.yandex.com/auth"
     
     user = UserAgent().random
     HEADERS = {
@@ -30,22 +30,26 @@ class User:
     faker_ = Faker('ru_RU')
     
     def __init__(self, 
-                 ru_captcha_key : str,
-                 first_name : str = faker_.first_name(),
-                 last_name : str =  faker_.last_name(),
-                 login : str = faker_.user_name() + faker_.md5()[:4],
-                 password : str = faker_.password(),
-                 hint_answer : str = faker_.md5()[:10],
+                 ru_captcha_key : str = None,
+                 first_name : str = None,
+                 last_name : str = None,
+                 login : str = None,
+                 password : str = None,
+                 hint_answer : str = None,
                  **kwargs):
 
         self.ru_captcha_key = ru_captcha_key
-        self.first_name = first_name
-        self.last_name = last_name
-        self.login = login
-        self.password = password
-        self.hint_answer = hint_answer
-        self.debug_mode = kwargs.get('captcha_debug') if 'captcha_debug' in kwargs.keys() else True
+        self.first_name = first_name if first_name else self.faker_.first_name()
+        self.last_name = last_name if last_name else self.faker_.last_name()
+        self.login = (login if login else self.faker_.user_name() + self.faker_.md5()[:4]).replace('_', '')
+        self.password = password if password else self.faker_.password()
+        self.hint_answer = hint_answer if hint_answer else self.faker_.md5()[:10]
         
+        self.debug_mode = kwargs.get('debug_mode') if 'debug_mode' in kwargs.keys() else True
+        self.auto_reg = kwargs.get('auto_reg') if 'auto_reg' in kwargs else True
+
+        if not self.auto_reg:
+            return
 
         ya_body = self.session.get(self.YANDEX_REGISTRATION_FIELDS).text
         soup = BeautifulSoup(ya_body, 'html.parser')
@@ -71,7 +75,7 @@ class User:
             'answer' : captcha_solution
         }
 
-        reg_data = {
+        self.reg_data = {
             'track_id' : track_id,
             'csrf_token' : csrf_token,
             'firstname' : self.first_name,
@@ -93,12 +97,14 @@ class User:
             'type': 'alternative'
         }
 
-        self.session.post(self.CHECK_HUMAN, data = captcha_data)
-        self.session.post(self.YANDEX_REGISTRATION, data = reg_data)
+        request = self.session.post(self.CHECK_HUMAN, data = captcha_data)
+        request2 = self.session.post(self.YANDEX_REGISTRATION, data = self.reg_data)
+        
+        if loads(request2.text).get('status') == 'error':
+            raise Exception('UserData Exception -> ' + str(loads(request2.text).get('error')[0].get('message') + '<--->' + request2.text))
 
-        accounts_file = open('accounts.json', 'a', encoding='utf-8')
-        json.dump(reg_data, accounts_file, indent = 6)
-        accounts_file.write(',\n')
+        if loads(request.text).get('status') == 'error':
+            raise Exception('SolveCaptcha Exception -> ' + str(loads(request.text).get('errors')))
 
         LogManager.info(self.login, self.password, 'Successfully created [+]')
         
@@ -140,3 +146,21 @@ class User:
             sleep(1)
             
         return captcha_solution.get('request')
+    
+    def authorize(self):
+        auth_data = {
+            'login': self.login,
+            'passwd': self.password,
+        }
+        
+        response = self.session.post(self.YANDEX_AUTHORIZATION, data = auth_data)
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        if soup.title.text == 'Authorization':
+            raise Exception('UserData Exception ')
+        else:
+            if self.debug_mode:
+                LogManager.info(self.login, self.password, 'Successfully logged in [+]')
+        
+        
